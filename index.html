@@ -193,6 +193,8 @@
       pointer-events: auto;
       backdrop-filter: blur(4px);
     }
+    .touch-btn { touch-action: none; }
+    .pv { display:block; margin:0 auto 4px; }
     .touch-btn:active {
       background: rgba(255, 107, 129, 0.7);
       transform: scale(0.92);
@@ -218,12 +220,12 @@
       <div style="font-weight:bold; color:#ff4757; margin-top:2px;">選擇你的角色</div>
       <div class="char-select">
         <div class="char-card selected" id="opt-boy" onclick="selectChar('boy')">
-          <span class="char-avatar">👦</span>
-          <span class="char-name">兒登 (男孩)</span>
+          <canvas class="pv" id="pv-boy" width="70" height="96"></canvas>
+          <span class="char-name">初忍 佐助</span>
         </div>
         <div class="char-card" id="opt-girl" onclick="selectChar('girl')">
-          <span class="char-avatar">👧</span>
-          <span class="char-name">君姨 (女孩)</span>
+          <canvas class="pv" id="pv-girl" width="70" height="96"></canvas>
+          <span class="char-name">初忍 小櫻</span>
         </div>
       </div>
 
@@ -294,6 +296,18 @@ function playSound(type) {
   }
 }
 
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+  CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+    r = Math.min(Array.isArray(r) ? r[0] : r, w / 2, h / 2);
+    this.moveTo(x + r, y);
+    this.arcTo(x + w, y, x + w, y + h, r);
+    this.arcTo(x + w, y + h, x, y + h, r);
+    this.arcTo(x, y + h, x, y, r);
+    this.arcTo(x, y, x + w, y, r);
+    this.closePath();
+  };
+}
+
 // Canvas & 遊戲狀態
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
@@ -305,7 +319,7 @@ let highestFloor = 0;
 
 // 控制變數
 const GRAVITY = 0.35;
-const PLAYER_SPEED = 1.62; 
+const PLAYER_SPEED = 1.9; 
 const BASE_SCROLL_SPEED = 0.378; 
 let currentScrollSpeed = BASE_SCROLL_SPEED;
 
@@ -318,7 +332,7 @@ let player = {
   vy: 0,
   width: 32,
   height: 44,
-  hp: 9,
+  hp: 3,
   maxHp: 9,
   invincibleTimer: 0, 
   onPlatform: null,
@@ -330,20 +344,25 @@ let player = {
 let platforms = [];
 
 window.addEventListener('keydown', e => {
-  if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = true;
-  if (e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft' || k === 'a') keys.left = true;
+  if (k === 'arrowright' || k === 'd') keys.right = true;
 });
 window.addEventListener('keyup', e => {
-  if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = false;
-  if (e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
+  const k = e.key.toLowerCase();
+  if (k === 'arrowleft' || k === 'a') keys.left = false;
+  if (k === 'arrowright' || k === 'd') keys.right = false;
 });
+window.addEventListener('blur', () => { keys.left = keys.right = false; });
 
 const btnLeft = document.getElementById('btn-left');
 const btnRight = document.getElementById('btn-right');
-btnLeft.addEventListener('touchstart', (e) => { e.preventDefault(); keys.left = true; });
-btnLeft.addEventListener('touchend', (e) => { e.preventDefault(); keys.left = false; });
-btnRight.addEventListener('touchstart', (e) => { e.preventDefault(); keys.right = true; });
-btnRight.addEventListener('touchend', (e) => { e.preventDefault(); keys.right = false; });
+function bindHold(el, key) {
+  el.addEventListener('pointerdown', e => { e.preventDefault(); keys[key] = true; });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, () => { keys[key] = false; }));
+}
+bindHold(btnLeft, 'left');
+bindHold(btnRight, 'right');
 
 function selectChar(gender) {
   selectedGender = gender;
@@ -356,17 +375,21 @@ function startGame() {
   document.getElementById('gameover-menu').classList.add('hidden');
   resetGame();
   gameState = 'PLAYING';
-  requestAnimationFrame(gameLoop);
+  startLoop();
 }
 
 function restartGame() {
   document.getElementById('gameover-menu').classList.add('hidden');
   resetGame();
   gameState = 'PLAYING';
+  startLoop();
 }
 
 function resetGame() {
   score = 0;
+  keys.left = keys.right = false;
+  player.facing = 'right';
+  player.isMoving = false;
   highestFloor = 1;
   currentScrollSpeed = BASE_SCROLL_SPEED;
   
@@ -374,9 +397,10 @@ function resetGame() {
   player.y = 80;
   player.vx = 0;
   player.vy = 0;
-  player.hp = 9;
+  player.hp = 3;
   player.invincibleTimer = 0;
   player.onPlatform = null;
+  player.ignorePlatform = null;
 
   platforms = [];
   platforms.push({
@@ -460,7 +484,8 @@ function update() {
     player.invincibleTimer--;
   }
 
-  currentScrollSpeed = BASE_SCROLL_SPEED + Math.min(highestFloor * 0.01, 0.5);
+  const tier = Math.floor(highestFloor / 20); // 每 20 層升一級難度
+  currentScrollSpeed = (BASE_SCROLL_SPEED + Math.min(highestFloor * 0.01, 0.5)) * 2.3 * (1 + tier * 0.2); // 上升速度 +30%，每 20 層再 +20%
   
   let wasOnPlatform = player.onPlatform;
   player.onPlatform = null;
@@ -472,6 +497,12 @@ function update() {
     }
 
     if (p.broken) continue;
+
+    // 被頂到天花板的那塊平台：先穿過它掉下去，避免卡在頂部
+    if (p === player.ignorePlatform) {
+      if (player.y > p.y + p.height) player.ignorePlatform = null;
+      else continue;
+    }
 
     if (
       player.vy >= 0 &&
@@ -530,7 +561,8 @@ function update() {
 
   if (player.y <= 24) {
     player.y = 25;
-    player.vy = 1;
+    player.vy = 3;                       // 被彈下去
+    if (player.onPlatform) player.ignorePlatform = player.onPlatform;
     hurtPlayer();
   }
 
@@ -541,148 +573,135 @@ function update() {
   player.animFrame++;
 }
 
-// 繪製精緻卡通人形角色（增強頭部輪廓與五官細節）
-function drawPlayer() {
-  if (player.invincibleTimer > 0 && Math.floor(player.animFrame / 4) % 2 === 0) {
-    return;
+// 忍者風格角色（原創設計：護額、忍者裝、飄動的圍巾/髮束）
+function drawNinja(c, girl, frame, moving) {
+  const rc = Math.sin(frame * 0.3);
+  const leg = moving ? rc * 0.5 : 0, arm = moving ? -rc * 0.5 : 0;
+  const by = moving ? Math.abs(rc) * -2 : Math.sin(frame * 0.08) * -0.6;
+  const wv = Math.sin(frame * 0.25) * 3;
+  const skin = '#ffe0bd', line = '#2f3542';
+  const cloth = girl ? '#c0392b' : '#2d3a8c';
+  const pants = girl ? '#2f3542' : '#1e2761';
+  const hair = girl ? '#3d2c5a' : '#4a3426';
+  const band = girl ? '#e84393' : '#1e90ff';
+  const T = Math.PI * 2;
+  c.lineCap = 'round'; c.lineJoin = 'round';
+
+  // 雙腿（繃帶 + 忍者鞋）
+  for (const s of [-1, 1]) {
+    c.save(); c.translate(4 * s, 10 + by); c.rotate(-leg * s);
+    c.strokeStyle = pants; c.lineWidth = 4.5;
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(0, 10); c.stroke();
+    c.fillStyle = '#f5f6fa'; c.fillRect(-2.2, 5, 4.4, 3);
+    c.fillStyle = line; c.beginPath(); c.arc(1.5, 10.5, 3, 0, T); c.fill();
+    c.restore();
   }
-
-  ctx.save();
-  ctx.translate(player.x + player.width / 2, player.y + player.height / 2);
-
-  if (player.facing === 'left') {
-    ctx.scale(-1, 1);
-  }
-
-  const isGirl = selectedGender === 'girl';
-  const runCycle = Math.sin(player.animFrame * 0.3);
-  const legAngle = player.isMoving ? runCycle * 0.5 : 0;
-  const armAngle = player.isMoving ? -runCycle * 0.5 : 0;
-  const bodyY = player.isMoving ? Math.abs(Math.sin(player.animFrame * 0.3)) * -2 : 0;
-
-  // 無敵防護光圈
-  if (player.invincibleTimer > 0) {
-    ctx.beginPath();
-    ctx.arc(0, bodyY, 26, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255, 234, 167, 0.4)';
-    ctx.strokeStyle = '#ffeaa7';
-    ctx.lineWidth = 2;
-    ctx.fill();
-    ctx.stroke();
-  }
-
-  // 雙腿
-  ctx.strokeStyle = '#2f3542';
-  ctx.lineWidth = 4;
-  ctx.lineCap = 'round';
-
-  ctx.save();
-  ctx.translate(-4, 10 + bodyY);
-  ctx.rotate(legAngle);
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 10); ctx.stroke();
-  ctx.fillStyle = isGirl ? '#ff4757' : '#3742fa';
-  ctx.beginPath(); ctx.arc(2, 10, 3, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  ctx.translate(4, 10 + bodyY);
-  ctx.rotate(-legAngle);
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 10); ctx.stroke();
-  ctx.fillStyle = isGirl ? '#ff4757' : '#3742fa';
-  ctx.beginPath(); ctx.arc(2, 10, 3, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
+  // 身後飄動的圍巾 / 腰帶尾
+  const ty = (girl ? 9 : -3) + by;
+  c.strokeStyle = girl ? '#ffeaa7' : '#ecf0f1'; c.lineWidth = 3.5;
+  c.beginPath(); c.moveTo(-6, ty); c.quadraticCurveTo(-14, ty + wv, -21, ty - wv + 2); c.stroke();
 
   // 身體
-  ctx.fillStyle = isGirl ? '#ff6b81' : '#70a1ff';
-  ctx.beginPath();
-  ctx.roundRect(-8, -4 + bodyY, 16, 16, 4);
-  ctx.fill();
-  // 身體外框
-  ctx.strokeStyle = '#2f3542';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-
-  if (isGirl) {
-    ctx.fillStyle = '#ff4757';
-    ctx.beginPath();
-    ctx.moveTo(-10, 8 + bodyY); ctx.lineTo(10, 8 + bodyY);
-    ctx.lineTo(12, 13 + bodyY); ctx.lineTo(-12, 13 + bodyY);
-    ctx.closePath(); ctx.fill();
-    ctx.stroke();
-  }
-
-  // 手臂
-  ctx.save();
-  ctx.translate(-6, -2 + bodyY); ctx.rotate(-armAngle);
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 9); ctx.stroke();
-  ctx.restore();
-
-  ctx.save();
-  ctx.translate(6, -2 + bodyY); ctx.rotate(armAngle);
-  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 9); ctx.stroke();
-  ctx.restore();
-
-  // --- 頭部與五官優化 ---
-  const headX = 0;
-  const headY = -13 + bodyY;
-  const headR = 12;
-
-  // 頭部底色與外框
-  ctx.fillStyle = '#ffeaa7';
-  ctx.beginPath();
-  ctx.arc(headX, headY, headR, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#2f3542';
-  ctx.lineWidth = 1.8;
-  ctx.stroke();
-
-  // 眼睛（黑眼珠 + 白色高光）
-  ctx.fillStyle = '#2f3542';
-  ctx.beginPath();
-  ctx.arc(headX + 4, headY - 1, 2.2, 0, Math.PI * 2); // 右眼
-  ctx.arc(headX - 2, headY - 1, 2.2, 0, Math.PI * 2); // 左眼
-  ctx.fill();
-
-  // 眼神高光
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(headX + 4.8, headY - 1.8, 0.8, 0, Math.PI * 2);
-  ctx.arc(headX - 1.2, headY - 1.8, 0.8, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 可愛微笑口部
-  ctx.strokeStyle = '#2f3542';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(headX + 1, headY + 3, 2.5, 0.1 * Math.PI, 0.9 * Math.PI);
-  ctx.stroke();
-
-  // 腮紅
-  ctx.fillStyle = 'rgba(255, 107, 129, 0.55)';
-  ctx.beginPath();
-  ctx.arc(headX + 7, headY + 2, 2.8, 0, Math.PI * 2);
-  ctx.arc(headX - 5, headY + 2, 2.8, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 頭飾與髮型
-  if (isGirl) {
-    ctx.fillStyle = '#57606f';
-    ctx.beginPath(); ctx.arc(headX - 1, headY - 4, 12.5, Math.PI, Math.PI * 2); ctx.fill();
-    // 雙馬尾
-    ctx.beginPath();
-    ctx.arc(headX - 13, headY + 1 + runCycle, 5.5, 0, Math.PI * 2);
-    ctx.arc(headX + 13, headY + 1 - runCycle, 5.5, 0, Math.PI * 2);
-    ctx.fill();
-    // 蝴蝶結
-    ctx.fillStyle = '#ff4757';
-    ctx.beginPath(); ctx.arc(headX, headY - 10, 3.5, 0, Math.PI * 2); ctx.fill();
+  c.fillStyle = cloth; c.strokeStyle = line; c.lineWidth = 1.5;
+  c.beginPath(); c.roundRect(-8, -4 + by, 16, 16, 4); c.fill(); c.stroke();
+  if (girl) {
+    c.fillStyle = pants;
+    c.beginPath(); c.moveTo(-9, 9 + by); c.lineTo(9, 9 + by); c.lineTo(11, 14 + by); c.lineTo(-11, 14 + by); c.closePath(); c.fill(); c.stroke();
+    c.fillStyle = '#ffeaa7'; c.fillRect(-8, 7 + by, 16, 3);
   } else {
-    ctx.fillStyle = '#ff4757';
-    ctx.beginPath(); ctx.arc(headX, headY - 3, 13, Math.PI * 0.8, Math.PI * 2.2); ctx.fill();
-    ctx.fillRect(headX + 2, headY - 6, 12, 3.5);
+    c.fillStyle = '#1e2761'; c.fillRect(-8, -4 + by, 16, 4);
+    c.strokeStyle = '#f5f6fa'; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(0, 0 + by); c.lineTo(0, 8 + by); c.stroke();
+    c.fillStyle = '#ecf0f1'; c.fillRect(-4.5, -5.5 + by, 9, 3);
+    c.fillStyle = line; c.fillRect(-8, 8 + by, 16, 2.5);
+  }
+  // 苦無袋
+  c.fillStyle = '#95a5a6'; c.strokeStyle = line; c.lineWidth = 1;
+  c.beginPath(); c.roundRect(5, 9 + by, 6, 6, 1.5); c.fill(); c.stroke();
+
+  // 手臂（袖子 + 護腕 + 手）
+  for (const s of [-1, 1]) {
+    c.save(); c.translate(6 * s, -2 + by); c.rotate(arm * s);
+    c.strokeStyle = cloth; c.lineWidth = 4;
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(0, 7); c.stroke();
+    c.fillStyle = '#f5f6fa'; c.fillRect(-2.2, 5, 4.4, 2.5);
+    c.fillStyle = skin; c.beginPath(); c.arc(0, 9.5, 2.3, 0, T); c.fill();
+    c.restore();
   }
 
+  // 頭部
+  const hy = -13 + by, R = 12;
+  if (girl) { // 長馬尾
+    c.strokeStyle = hair; c.lineWidth = 6;
+    c.beginPath(); c.moveTo(-9, hy - 3); c.quadraticCurveTo(-19, hy + 2 + rc * 3, -17, hy + 16 + rc * 3); c.stroke();
+  }
+  c.fillStyle = band; // 護額布尾
+  c.beginPath(); c.moveTo(-11, hy - 6); c.lineTo(-21, hy - 9 + wv); c.lineTo(-19, hy - 3 + wv); c.lineTo(-11, hy - 3); c.fill();
+
+  c.fillStyle = skin; c.strokeStyle = line; c.lineWidth = 1.8;
+  c.beginPath(); c.arc(0, hy, R, 0, T); c.fill(); c.stroke();
+
+  // 眼睛
+  const ry = girl ? 2.6 : 2.2;
+  c.fillStyle = line;
+  c.beginPath(); c.ellipse(4.5, hy + 2, 1.8, ry, 0, 0, T); c.ellipse(-2, hy + 2, 1.8, ry, 0, 0, T); c.fill();
+  c.fillStyle = '#fff';
+  c.beginPath(); c.arc(5.2, hy + 1, 0.8, 0, T); c.arc(-1.3, hy + 1, 0.8, 0, T); c.fill();
+  c.strokeStyle = line; c.lineWidth = 1.3;
+  if (girl) { // 睫毛 + 小嘴
+    c.beginPath(); c.moveTo(6.2, hy); c.lineTo(7.8, hy - 1.3); c.moveTo(-3.2, hy); c.lineTo(-4.8, hy - 1.3); c.stroke();
+    c.beginPath(); c.arc(1.5, hy + 6, 1.8, 0.15 * Math.PI, 0.85 * Math.PI); c.stroke();
+  } else {    // 自信笑容
+    c.beginPath(); c.arc(1.5, hy + 5.5, 2.8, 0.1 * Math.PI, 0.9 * Math.PI); c.stroke();
+  }
+  c.fillStyle = 'rgba(255,107,129,0.5)';
+  c.beginPath(); c.arc(8, hy + 5, 2.2, 0, T); c.arc(-5.5, hy + 5, 2.2, 0, T); c.fill();
+
+  // 頭髮
+  c.fillStyle = hair;
+  c.beginPath(); c.arc(-0.5, hy - 3, R + 0.8, Math.PI, T); c.closePath(); c.fill();
+  if (girl) {
+    c.beginPath(); c.moveTo(8, hy - 8); c.lineTo(12.5, hy + 6); c.lineTo(7, hy - 3); c.closePath(); c.fill();
+    c.fillStyle = band; c.beginPath(); c.arc(-9.5, hy - 3, 2.3, 0, T); c.fill();
+  } else {    // 刺刺頭
+    for (let i = 0; i < 5; i++) {
+      const bx = -11 + i * 5.5;
+      c.beginPath(); c.moveTo(bx, hy - 9); c.lineTo(bx + 2.75 + (i - 2) * 1.2, hy - 17 - (i % 2) * 3); c.lineTo(bx + 5.5, hy - 9); c.closePath(); c.fill();
+    }
+  }
+  // 護額
+  c.save(); c.beginPath(); c.arc(0, hy, R, 0, T); c.clip();
+  c.fillStyle = band; c.fillRect(-R, hy - 7, R * 2, 4.2); c.restore();
+  c.fillStyle = '#dfe6e9'; c.strokeStyle = line; c.lineWidth = 1;
+  c.beginPath(); c.roundRect(0.5, hy - 7.6, 9.5, 5.4, 1.2); c.fill(); c.stroke();
+  c.beginPath(); c.moveTo(3, hy - 4.9); c.lineTo(7.8, hy - 4.9); c.stroke();
+}
+
+function drawPlayer() {
+  if (player.invincibleTimer > 0 && Math.floor(player.animFrame / 4) % 2 === 0) return;
+  ctx.save();
+  ctx.translate(player.x + player.width / 2, player.y + player.height / 2);
+  if (player.facing === 'left') ctx.scale(-1, 1);
+  if (player.invincibleTimer > 0) {
+    ctx.beginPath(); ctx.arc(0, 0, 26, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 234, 167, 0.4)'; ctx.strokeStyle = '#ffeaa7'; ctx.lineWidth = 2;
+    ctx.fill(); ctx.stroke();
+  }
+  drawNinja(ctx, selectedGender === 'girl', player.animFrame, player.isMoving);
   ctx.restore();
+}
+
+function drawPreviews(t) {
+  for (const g of ['boy', 'girl']) {
+    const cv = document.getElementById('pv-' + g), c = cv.getContext('2d');
+    c.clearRect(0, 0, cv.width, cv.height);
+    c.save(); c.translate(38, 56); c.scale(1.6, 1.6);
+    drawNinja(c, g === 'girl', t / 16, false);
+    c.restore();
+  }
+}
+function previewLoop(t) {
+  if (gameState === 'MENU') { drawPreviews(t); requestAnimationFrame(previewLoop); }
 }
 
 function drawPlatforms() {
@@ -766,7 +785,8 @@ function drawPlatforms() {
       ctx.beginPath(); ctx.roundRect(p.x, p.y, p.width, p.height, 6); ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.font = '12px sans-serif';
-      ctx.fillText('❤️ 補血', p.x + p.width / 2 - 20, p.y + 12);
+      ctx.textAlign = 'center';
+      ctx.fillText('❤️ 補血', p.x + p.width / 2, p.y + 12);
     }
 
     ctx.restore();
@@ -774,6 +794,8 @@ function drawPlatforms() {
 }
 
 function drawHUD() {
+  ctx.save();
+  ctx.textAlign = 'left';
   ctx.fillStyle = '#ff4757';
   const spikeWidth = 16;
   for (let x = 0; x < canvas.width; x += spikeWidth) {
@@ -797,6 +819,7 @@ function drawHUD() {
   ctx.font = 'bold 18px "Comic Sans MS", sans-serif';
   ctx.textAlign = 'right';
   ctx.fillText(`B${highestFloor} F`, canvas.width - 15, 42);
+  ctx.restore();
 }
 
 function render() {
@@ -809,16 +832,36 @@ function render() {
   drawHUD();
 }
 
-function gameLoop() {
-  if (gameState === 'PLAYING') {
-    update();
+let scoreSaved = false, loopId = 0, lastTime = 0, acc = 0;
+const STEP = 1000 / 60;
+
+function startLoop() {
+  cancelAnimationFrame(loopId);
+  lastTime = 0; acc = 0;
+  loopId = requestAnimationFrame(gameLoop);
+}
+
+function gameLoop(ts) {
+  if (gameState !== 'PLAYING') return;
+  if (!lastTime) lastTime = ts;
+  acc += Math.min(ts - lastTime, 100);
+  lastTime = ts;
+  try {
+    while (acc >= STEP && gameState === 'PLAYING') { update(); acc -= STEP; }
     render();
-    requestAnimationFrame(gameLoop);
-  }
+  } catch (err) { console.error(err); }
+  if (gameState === 'PLAYING') loopId = requestAnimationFrame(gameLoop);
 }
 
 function gameOver() {
+  if (gameState === 'GAMEOVER') return;
   gameState = 'GAMEOVER';
+  player.hp = Math.max(0, player.hp);
+  keys.left = keys.right = false;
+  scoreSaved = false;
+  const saveBtn = document.querySelector('#gameover-menu .btn');
+  saveBtn.disabled = false;
+  saveBtn.innerText = '紀錄成績上雲端';
   document.getElementById('final-floor').innerText = `B${highestFloor} 層`;
   document.getElementById('gameover-menu').classList.remove('hidden');
   fetchLeaderboard();
@@ -849,6 +892,7 @@ async function fetchLeaderboard() {
 }
 
 async function saveScore() {
+  if (scoreSaved) return;
   let nameInput = document.getElementById('player-name').value.trim() || '無名勇士';
   if (nameInput.length > 10) nameInput = nameInput.substring(0, 10);
 
@@ -867,13 +911,14 @@ async function saveScore() {
       })
     });
 
+    scoreSaved = true;
     alert('成績已成功上傳至 Google 雲端試算表！');
     setTimeout(fetchLeaderboard, 1000);
   } catch (err) {
     alert('上傳失敗，請檢查網路連線。');
   } finally {
-    saveBtn.disabled = false;
-    saveBtn.innerText = '紀錄成績上雲端';
+    saveBtn.disabled = scoreSaved;
+    saveBtn.innerText = scoreSaved ? '已上傳 ✔' : '紀錄成績上雲端';
   }
 }
 
@@ -882,6 +927,7 @@ function escapeHtml(str) {
 }
 
 render();
+requestAnimationFrame(previewLoop);
 </script>
 </body>
 </html>
