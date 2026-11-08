@@ -140,7 +140,7 @@
     input[type="text"] {
       width: 75%;
       padding: 8px 12px;
-      font-size: 15px;
+      font-size: 16px; /* iOS 低於 16px 會在聚焦時自動放大 */
       border: 2px solid #ff6b81;
       border-radius: 12px;
       text-align: center;
@@ -193,6 +193,8 @@
       pointer-events: auto;
       backdrop-filter: blur(4px);
     }
+    html, body, #game-container { touch-action: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+    input[type="text"] { touch-action: manipulation; }
     .touch-btn { touch-action: none; }
     .pv { display:block; margin:0 auto 4px; }
     .touch-btn:active {
@@ -239,7 +241,7 @@
 
       <div style="width: 100%;">
         <label style="font-size:12px; color:#57606f;">輸入你的名稱 (限10個字元)：</label><br>
-        <input type="text" id="player-name" maxlength="10" placeholder="你的名字" value="你的名字">
+        <input type="text" id="player-name" maxlength="10" placeholder="請輸入你的名字" autocomplete="off">
         <button class="btn" style="padding: 5px 18px; font-size:13px; margin-bottom: 6px;" onclick="saveScore()">紀錄成績上雲端</button>
       </div>
 
@@ -319,7 +321,7 @@ let highestFloor = 0;
 
 // 控制變數
 const GRAVITY = 0.35;
-const PLAYER_SPEED = 1.9; 
+const PLAYER_SPEED = 2.0; 
 const BASE_SCROLL_SPEED = 0.378; 
 let currentScrollSpeed = BASE_SCROLL_SPEED;
 
@@ -357,6 +359,17 @@ window.addEventListener('blur', () => { keys.left = keys.right = false; });
 
 const btnLeft = document.getElementById('btn-left');
 const btnRight = document.getElementById('btn-right');
+// 禁止縮放：iOS Safari 會無視 user-scalable=no，需另外攔截
+['gesturestart', 'gesturechange', 'gestureend'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
+document.addEventListener('touchmove', e => { if (e.touches.length > 1 || (e.scale && e.scale !== 1)) e.preventDefault(); }, { passive: false });
+let lastTouchEnd = 0;
+document.addEventListener('touchend', e => {
+  const now = Date.now();
+  if (now - lastTouchEnd < 350 && e.target.tagName !== 'INPUT') e.preventDefault(); // 快速連點不觸發雙擊放大
+  lastTouchEnd = now;
+}, { passive: false });
+document.addEventListener('dblclick', e => e.preventDefault());
+
 function bindHold(el, key) {
   el.addEventListener('pointerdown', e => { e.preventDefault(); keys[key] = true; });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => el.addEventListener(ev, () => { keys[key] = false; }));
@@ -485,7 +498,7 @@ function update() {
   }
 
   const tier = Math.floor(highestFloor / 20); // 每 20 層升一級難度
-  currentScrollSpeed = (BASE_SCROLL_SPEED + Math.min(highestFloor * 0.01, 0.5)) * 2.3 * (1 + tier * 0.2); // 上升速度 +30%，每 20 層再 +20%
+  currentScrollSpeed = (BASE_SCROLL_SPEED + Math.min(highestFloor * 0.01, 0.5)) * 2.5 * (1 + tier * 0.2); // 上升速度 +30%，每 20 層再 +20%
   
   let wasOnPlatform = player.onPlatform;
   player.onPlatform = null;
@@ -883,7 +896,7 @@ async function fetchLeaderboard() {
     lbContainer.innerHTML = scores.map((s, idx) => `
       <div class="lb-row">
         <span>${idx + 1}. ${escapeHtml(String(s.name))}</span>
-        <span>B${s.floor} 層 (${s.date || ''})</span>
+        <span>B${s.floor} 層 (${formatDate(s.date)})</span>
       </div>
     `).join('');
   } catch (err) {
@@ -891,9 +904,25 @@ async function fetchLeaderboard() {
   }
 }
 
+// 把 2026-11-06T16:00:00.000Z 這類格式轉成當地日期 2026-11-07
+function formatDate(d) {
+  if (!d) return '';
+  if (typeof d === 'string' && !d.includes('T')) return d;
+  const t = new Date(d);
+  if (isNaN(t)) return String(d).split('T')[0];
+  const p = n => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
+}
+
 async function saveScore() {
   if (scoreSaved) return;
-  let nameInput = document.getElementById('player-name').value.trim() || '無名勇士';
+  const nameEl = document.getElementById('player-name');
+  let nameInput = nameEl.value.trim();
+  if (!nameInput) {
+    alert('請先輸入你的名字再上傳喔！');
+    nameEl.focus();
+    return;
+  }
   if (nameInput.length > 10) nameInput = nameInput.substring(0, 10);
 
   const saveBtn = document.querySelector('#gameover-menu .btn');
